@@ -1,42 +1,5 @@
-# Funciones de impulsos respuestas de las expectativas --------------------
-library(tidyverse)
-library(vars)
-library(lmtest)
-library(gt)
-library(sandwich)
-library(tseries)
-library(forecast)
-library(readxl)  # Para leer Excel
-
-# Cargar datos y unir -----------------------------------------------------
-data_ms <- read_excel("./data/data.xlsx", sheet = "data_expect")
-
-data_infl <- data_ms |>
-  mutate(dl4_ipc = 100 * (IPC / dplyr::lag(IPC,12) - 1),
-         dev_pos = pmax(dl4_ipc - meta, 0),
-         dev_neg = pmax(meta - dl4_ipc, 0),
-         mas_meta = factor(dl4_ipc > meta)) |>
-  filter(!is.na(dl4_ipc), fecha >= "2009-05-01")
-
-expect_by_group <-read_excel("./data/expectativas_inflacion_grupo.xlsx") |> 
-  dplyr::select(periodo, grupo, inf_12) |> 
-  dplyr::mutate(
-    periodo = as.Date(periodo),
-    grupo = ifelse(
-              stringr::str_detect(grupo,"Puestos de bolsa|Economistas|Académicos"),
-                                 "Otros", grupo),
-    grupo = stringr::str_to_lower(grupo)) |> 
-  summarise(inf_12 = mean(inf_12, na.rm = TRUE),
-            .by = c(periodo, grupo)) |> 
-  pivot_wider(
-    id_cols = periodo, 
-    names_from = grupo, 
-    values_from = inf_12
-  ) |> janitor::clean_names()
-
-datos_exp_infl <- data_infl |> 
-  left_join(expect_by_group, by = c("fecha" = "periodo"))
-
+source("work_data.R")
+library(moments)
 # Funciones ---------------------------------------------------------------
 
 # ------------------------------ Funcion de impulso respuesta
@@ -80,8 +43,8 @@ impulso_respuestas <- function(data, var_impulso, var_reponse, ahead = 15){
     theme_em()
 }
 
+# ------------------------------ Modelo de asimetría
 
-# Modelo de asimetría  ------------------------------------------
 modelo_asimetria <- function(data, variable){
   
   checkmate::check_choice(variable, c("exp_inf", "otros"))
@@ -121,7 +84,7 @@ for (i in tipo_inflacion) {
 estimacion_infl_alt <- list()
 
 for (i in tipo_inflacion) {
-  modelo_general <- modelo_asimetria(data = datos_exp_infl|> filter(dl4_ipc > mean(dl4_ipc, na.rm = TRUE)), variable = i)
+  modelo_general <- modelo_asimetria(data = datos_exp_infl |> filter(dl4_ipc > mean(dl4_ipc, na.rm = TRUE)), variable = i)
   
   estimacion_infl_alt[[i]] <- c(modelo_general$coefficients[-1], rsuared = summary(modelo_general)$r.squared)
 }
@@ -129,7 +92,7 @@ for (i in tipo_inflacion) {
 estimacion_infl_baja <- list()
 
 for (i in tipo_inflacion) {
-  modelo_general <- modelo_asimetria(data = datos_exp_infl|> filter(dl4_ipc > mean(dl4_ipc, na.rm = TRUE)), variable = i)
+  modelo_general <- modelo_asimetria(data = datos_exp_infl |> filter(dl4_ipc > mean(dl4_ipc, na.rm = TRUE)), variable = i)
   
   estimacion_infl_baja[[i]] <- c(modelo_general$coefficients[-1], rsuared = summary(modelo_general)$r.squared)
 }
@@ -195,11 +158,7 @@ todos_escenarios <- list(
 )
 
 
-
-
-
-
-
+# Funciones de impulso respuesta ------------------------------------------
 
 impulso_respuestas(data = datos_exp_infl, var_impulso = "dl4_ipc", var_reponse = "exp_inf", ahead = 12)
 impulso_respuestas(data = datos_exp_infl, var_impulso = "dl4_ipc", var_reponse = "bancos", ahead = 15)
@@ -214,41 +173,322 @@ impulso_respuestas(data = datos_exp_infl, var_impulso = "tia_180", var_reponse =
 impulso_respuestas(data = datos_exp_infl, var_impulso = "tia_180", var_reponse = "otros", ahead = 9)
 
 
+# Estadisticos descriptivos en diferentes escenario -----------------------
+grupos <- c("bancos", "organismos_multilaterales", "consultores", "otros")
 
-# 
-# Instalar gt si no está instalado
-# Crear el DataFrame con los valores más importantes de la regresión
-df <- data.frame(
-  Variable = c("Exp. General", "Bancos", "Organismos Multilaterales", "Consultores", "Otros"),
-  dev_pos = c(0.402, 0.387, 0.262, 0.382, 0.494),
-  dev_neg = c(-0.059, -0.099, -0.052, -0.149, -0.062),
-  Constant = c(4.469, 4.263, 4.344, 4.573, 4.928),
-  R2 = c(0.268, 0.280, 0.139, 0.308, 0.163),
-  Adjusted_R2 = c(0.260, 0.272, 0.130, 0.299, 0.154),
-  Residual_Std_Error = c(1.187, 1.168, 1.176, 1.173, 1.981),
-  F_Statistic = c(33.520, 35.414, 14.623, 37.088, 17.762)
+
+# General
+tabla_resumen <- function(data) {map_dfr(grupos, function(col) {
+  
+  x <- data[[col]]
+  ref <- data$exp_inf
+  
+  x_clean <- x[!is.na(x)]
+  
+  tibble(
+    grupo = col,
+    media = mean(x, na.rm = TRUE),
+    varianza = var(x, na.rm = TRUE),
+    coef_var = sd(x, na.rm = TRUE) / mean(x, na.rm = TRUE),
+    correlacion = cor(x, ref, use = "complete.obs"),
+    autocor_1 = cor(x_clean[-length(x_clean)], x_clean[-1], use = "complete.obs"),
+    asimetria = skewness(x, na.rm = TRUE),
+    curtosis = kurtosis(x, na.rm = TRUE),
+    rango_intercuartil = IQR(x, na.rm = TRUE)
+  )
+})}
+
+tabla_resumen(data = expec_group) |> 
+  clipr::write_clip()
+
+# Datos Escenarios:
+alta_vix <- expec_group |> # Alta volatilidad 
+  filter(vixcls > quantile(vixcls, 0.7))
+
+baja_vix <- expec_group |> # Baja volatilidad 
+  filter(vixcls < quantile(vixcls, 0.7))
+
+alta_inflacion <- expec_group |> # Alta inflacionk
+  filter(dl4_ipc > mean(dl4_ipc, na.rm  = TRUE))
+
+baja_inflacion <- expec_group |> # Baja inflacionk
+  filter(dl4_ipc < mean(dl4_ipc, na.rm  = TRUE))
+
+bf_covid <- expec_group[c(70:127),] # antes del covid
+af_covid <- expec_group[c(128:186),] # Después del covid
+
+# Alta volatilidad
+tabla_resumen(alta_vix) |>
+  clipr::write_clip()
+# Baja volatilidad
+tabla_resumen(baja_vix) |> clipr::write_clip()
+
+# Alta y baja inflacion ------------
+# Alta inflacion
+tabla_resumen(alta_inflacion) |> clipr::write_clip()
+# Baja Inflación
+tabla_resumen(baja_inflacion) |> clipr::write_clip()
+
+# pre y post covid ------------
+# Antes del covid
+tabla_resumen(bf_covid) |> clipr::write_clip()
+
+# Después del covid
+tabla_resumen(af_covid) |> clipr::write_clip()
+
+
+# Datos con deltas, en diferentes Escenarios:--------------
+deltas <- expec_group |> 
+  mutate(
+    across(c(bancos:otros),
+           \(x) x - lag(x))
+  )
+
+alta_vix <- deltas |> # Alta volatilidad 
+  filter(vixcls > quantile(vixcls, 0.7))
+
+baja_vix <- deltas |> # Baja volatilidad 
+  filter(vixcls < quantile(vixcls, 0.7))
+
+alta_inflacion <- deltas |> # Alta inflacionk
+  filter(dl4_ipc > mean(dl4_ipc, na.rm  = TRUE))
+
+baja_inflacion <- deltas |> # Baja inflacionk
+  filter(dl4_ipc < mean(dl4_ipc, na.rm  = TRUE))
+
+bf_covid <- deltas[c(70:127),] # antes del covid
+af_covid <- deltas[c(128:186),] # Después del covid
+
+# General
+tabla_resumen(deltas) |> 
+  clipr::write_clip()
+
+# Alta volatilidad
+tabla_resumen(alta_vix) |> clipr::write_clip()
+# Baja volatilidad
+tabla_resumen(baja_vix) |> clipr::write_clip()
+
+# Alta y baja inflacion ------------
+# Alta inflacion
+tabla_resumen(alta_inflacion) |> clipr::write_clip()
+# Baja Inflación
+tabla_resumen(baja_inflacion) |> clipr::write_clip()
+
+# pre y post covid ------------
+# Antes del covid
+tabla_resumen(bf_covid) |> clipr::write_clip()
+
+# Después del covid
+tabla_resumen(af_covid) |> clipr::write_clip()
+
+
+
+# Sesgo sistematico -------------------------------------------------------
+
+sesgo_sistematico <- function(data){
+  data |> 
+    dplyr::summarise(
+      dplyr::across(c(bancos:otros),
+                    \(x){mean(x, na.rm = TRUE) - mean(exp_inf, na.rm = TRUE)})
+    )
+}
+expec_group |>
+  sesgo_sistematico() |> 
+  clipr::write_clip()
+
+alta_vix |>
+  sesgo_sistematico() |> 
+  clipr::write_clip()
+
+baja_vix |>
+  sesgo_sistematico() |> 
+  clipr::write_clip()
+
+
+alta_inflacion |>
+  sesgo_sistematico() |> 
+  clipr::write_clip()
+
+baja_inflacion |>
+  sesgo_sistematico() |> 
+  clipr::write_clip()
+  
+bf_covid |> 
+  sesgo_sistematico() |> 
+  clipr::write_clip()
+
+af_covid |> 
+  sesgo_sistematico() |> 
+  clipr::write_clip()
+
+# Persistencia ------------------------------------------------------------
+# ---------------------------------------------
+# PASO 1: Cargar paquetes necesarios
+# ---------------------------------------------
+library(dplyr)
+library(zoo)
+library(purrr)
+library(broom)
+library(moments)
+library(tibble)
+library(ggplot2)
+library(tidyr)
+
+# ---------------------------------------------
+# PASO 2: Definir función para calcular persistencia (AR(1)) móvil
+# ---------------------------------------------
+calc_persistencia <- function(serie, width = 12) {
+  serie_zoo <- zoo(serie)
+  rollapply(
+    data = serie_zoo,
+    width = width,
+    FUN = function(x) {
+      y <- x[-1]
+      x_lag <- x[-length(x)]
+      modelo <- lm(y ~ x_lag)
+      coef(modelo)[2]  # rho
+    },
+    by = 1,
+    align = "right",
+    fill = NA
+  )
+}
+
+# ---------------------------------------------
+# PASO 3: Calcular persistencia para todos los grupos
+# ---------------------------------------------
+grupos <- c("bancos", "organismos_multilaterales", "consultores", "otros")
+
+persistencias <- map_dfc(grupos, ~calc_persistencia(expec_group[[.x]]))
+names(persistencias) <- grupos
+persistencias$fecha <- tail(expec_group$fecha, nrow(persistencias))
+
+# ---------------------------------------------
+# PASO 4: Calcular el sesgo sistemático en la persistencia (u = rho - mean(rho))
+# ---------------------------------------------
+persistencias_u <- persistencias %>%
+  dplyr::select(-fecha) %>%
+  mutate(across(everything(), ~ . - mean(., na.rm = TRUE)))
+
+# ---------------------------------------------
+# PASO 5: Clasificar el entorno: alta/baja volatilidad e inflación
+# ---------------------------------------------
+vol_corte <- quantile(vixcls, 0.7, na.rm = TRUE)
+inf_corte <- mean(expec_group$dl4_ipc, na.rm = TRUE)
+
+condiciones <- tibble(
+  fecha = expec_group$fecha,
+  alta_vol = expec_group$vixcls > vol_corte,
+  alta_inf = expec_group$dl4_ipc > inf_corte
 )
 
-df %>%
-  gt() %>%
-  tab_header(
-    title = "Modelo de asimetría",
-    subtitle = md("$expectativas = \\beta_0 + \\beta_1 dev\\_pos + \\beta_2 dev\\_neg + \\varepsilon$")) %>%
-  fmt_number(
-    columns = c(dev_pos, dev_neg, Constant, R2, Adjusted_R2, Residual_Std_Error, F_Statistic),
-    decimals = 2
-  ) %>%
-  cols_label(
-    Variable = "Tipo",
-    dev_pos = "dev_pos",
-    dev_neg = "dev_neg",
-    Constant = "Constante",
-    R2 = "R²",
-    Adjusted_R2 = "R² Aj",
-    Residual_Std_Error = "Error Std",
-    F_Statistic = "F Statistic"
-  ) %>%
-  tab_options(
-    table.width = pct(100),
-    column_labels.font.weight = "bold"
+# ---------------------------------------------
+# PASO 6: Unir todo y calcular medias del sesgo de persistencia por condición
+# ---------------------------------------------
+df_full <- cbind(condiciones, persistencias_u)
+
+tabla_resultado <-
+  df_full |> 
+    rename("organimosMultilaterales" = organismos_multilaterales) |>
+  summarise(
+    across(bancos:otros, list(
+      total = ~mean(., na.rm = TRUE),
+      alta_vol = ~mean(.[alta_vol], na.rm = TRUE),
+      baja_vol = ~mean(.[!alta_vol], na.rm = TRUE),
+      alta_inf = ~mean(.[alta_inf], na.rm = TRUE),
+      baja_inf = ~mean(.[!alta_inf], na.rm = TRUE)
+    ), .names = "{.col}_{.fn}")) |> 
+  as_tibble() |>
+  pivot_longer(everything(), names_to = "nombre_variable", values_to = "valor") |> 
+    separate(nombre_variable, into = c("grupo", "condicion1", "condicion2"), fill = "right", sep = "_") |> 
+    mutate(
+      condicion = ifelse(is.na(condicion2), condicion1, paste(condicion1, condicion2, sep = "_"))
+    ) %>%
+    dplyr::select(grupo, condicion, valor) |> 
+    pivot_wider(
+      id_cols = grupo, 
+      names_from = condicion,
+      values_from = valor
+    )
+
+tabla_resultado |> clipr::write_clip()
+# ---------------------------------------------
+# PASO 7 (Opcional): Visualizar resultados
+# ---------------------------------------------
+ggplot(tabla_resultado, aes(x = grupo, y = total)) +
+  geom_col(fill = "steelblue") +
+  labs(title = "Sesgo sistemático promedio en la persistencia",
+       x = "Grupo",
+       y = "Sesgo de persistencia promedio") +
+  theme_minimal()
+
+# Puedes visualizar también otras condiciones como alta_vol, alta_inf, etc.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Elasticidad a nueva información ---------------------------------------
+
+data_modelos <- expec_group |> 
+  mutate(
+    d_inflacion = dl4_ipc - lag(dl4_ipc),
+    dumm_inflacion = dl4_ipc > mean(dl4_ipc, na.rm  = TRUE),
+    dumm_volatilidad = vixcls > quantile(vixcls, 0.7),
+    dumm_covid = fecha > "2020-01-01"
   )
+
+modelo1 <- lm(exp_inf ~ lag(exp_inf) + d_inflacion, data = data_modelos)
+modelo2 <- lm(
+  exp_inf ~ lag(exp_inf) + d_inflacion + I(d_inflacion*dumm_inflacion), 
+  data = data_modelos)
+
+modelo3 <- lm(
+  exp_inf ~ lag(exp_inf)+ d_inflacion + I(d_inflacion*dumm_volatilidad), 
+  data = data_modelos)
+
+stargazer::stargazer(modelo1, modelo2, modelo3, type = "text")
+
+
+mod_covid <- lm(
+  exp_inf ~ lag(exp_inf) + d_inflacion + I(d_inflacion*dumm_inflacion) + dumm_covid, 
+  data = data_modelos)
+
+mod_covid2 <- lm(
+  exp_inf ~ lag(exp_inf)+ d_inflacion + I(d_inflacion*dumm_volatilidad) + dumm_covid, 
+  data = data_modelos)
+
+stargazer::stargazer(mod_covid, mod_covid2, type = "text")
+
+
+# Anclaje de las expectativas ---------------------------------------------
+
+eem_anclaje <- databcrd::get_expectativas(modalidad = "eem") |> 
+  dplyr::filter(
+    medida == "Promedio",
+    variable_key == "inf",
+    fecha >= "2009-06-01",
+    fecha <= "2024-11-01") |> 
+  dplyr::select(fecha, horizonte, expectativa) |> 
+  # filter(horizonte %in% c("12 meses", "24 meses")) |> 
+  pivot_wider(
+    id_cols = fecha, 
+    names_from = horizonte,
+    values_from = expectativa
+  ) |> janitor::clean_names()
+  
+modelo_anclaje <- lm(x24_meses~x12_meses, data = eem_anclaje |> 
+                       dplyr::filter(!is.na(x24_meses)))
+stargazer::stargazer(modelo_anclaje, type = "text")
