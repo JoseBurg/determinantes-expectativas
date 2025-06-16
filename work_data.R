@@ -49,7 +49,7 @@ expect_all <- readRDS("data/eem_historico.rds")
 
 expect_by_group <- expect_all |> 
   filter(periodo < "2024-12-01") |> 
-  dplyr::select(periodo, grupo, inf_12 = inflacion_interanual)
+  dplyr::select(periodo, grupo, inf_12 = inflacion_interanual) |> 
   dplyr::mutate(
     periodo = as.Date(periodo),
     grupo = ifelse(
